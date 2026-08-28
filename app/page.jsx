@@ -1,263 +1,324 @@
 "use client";
-import React, { useState } from "react";
+
+import { useEffect, useMemo, useState } from "react";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
-import { useAccount, useBalance, useWriteContract } from "wagmi";
-import { parseUnits } from "viem";
+import {
+  useAccount,
+  useBalance,
+  usePublicClient,
+  useSwitchChain,
+  useWaitForTransactionReceipt,
+  useWriteContract,
+} from "wagmi";
+import { isAddress, parseEventLogs, parseUnits } from "viem";
+import { arcTestnet } from "@/lib/wagmi-config";
+
+const USDC = "0x3600000000000000000000000000000000000000";
+const transferAbi = [
+  {
+    type: "function",
+    name: "transfer",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "recipient", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    type: "event",
+    name: "Transfer",
+    inputs: [
+      { name: "from", type: "address", indexed: true },
+      { name: "to", type: "address", indexed: true },
+      { name: "value", type: "uint256", indexed: false },
+    ],
+  },
+];
+
+function encodeRequest(value) {
+  return btoa(unescape(encodeURIComponent(JSON.stringify(value))))
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replaceAll("=", "");
+}
+
+function decodeRequest(value) {
+  try {
+    const padded = value.replaceAll("-", "+").replaceAll("_", "/") + "===".slice((value.length + 3) % 4);
+    return JSON.parse(decodeURIComponent(escape(atob(padded))));
+  } catch {
+    return null;
+  }
+}
+
+function shortAddress(value) {
+  return value ? `${value.slice(0, 6)}…${value.slice(-4)}` : "—";
+}
 
 export default function Home() {
-  const { address, isConnected } = useAccount();
-  const [loading, setLoading] = useState(false);
-  const [aiCommand, setAiCommand] = useState("");
-  const [aiResponse, setAiResponse] = useState("Bhai, main aapka BillFlow AI assistant hoon. Boliye kya help karu?");
-  const [swapFrom, setSwapFrom] = useState("EURC");
-
-  // Send Modules ke UI states
-  const [showSendBox, setShowSendBox] = useState(false);
-  const [showReceiveBox, setShowReceiveBox] = useState(false);
-  const [sendAddress, setSendAddress] = useState("");
-  const [sendAmount, setSendAmount] = useState("");
-
-  // Custom utility inputs tracking
-  const [billAmounts, setBillAmounts] = useState({
-    grocery: "",
-    petrol: "",
-    internet: "",
-    electricity: "",
-    water: "",
-    rent: "",
-    school: "",
-    insurance: "",
-    others: ""
-  });
-
-  const [history, setHistory] = useState([
-    { title: "Grocery Payment", type: "Expense", amount: "1.50", date: "Today, 02:15 PM", hash: "0x3bfbab5d5ce0d1a5d682cbc742d3940cf59db0369d173b71ba2a3b8f43bfbcb1" },
-    { title: "Petrol/Gas Refill", type: "Expense", amount: "3.00", date: "Yesterday, 06:45 PM", hash: "0xe15d6dbb50178f60930b8a3e3e775f3c022505ea2e351b6c2c2985d2405c8ebc" }
-  ]);
-
-  const { data: balanceData, refetch } = useBalance({
+  const { address, isConnected, chainId } = useAccount();
+  const { switchChainAsync } = useSwitchChain();
+  const { writeContractAsync, data: txHash, isPending: isWriting } = useWriteContract();
+  const publicClient = usePublicClient({ chainId: arcTestnet.id });
+  const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({ hash: txHash });
+  const { data: balance, refetch: refetchBalance } = useBalance({
     address,
-    token: "0x3600000000000000000000000000000000000000",
-    chainId: 5042002
+    token: USDC,
+    chainId: arcTestnet.id,
+    query: { enabled: Boolean(address) },
   });
 
-  const { writeContractAsync } = useWriteContract();
+  const [mode, setMode] = useState("create");
+  const [amount, setAmount] = useState("");
+  const [recipient, setRecipient] = useState("");
+  const [description, setDescription] = useState("");
+  const [invoiceNumber, setInvoiceNumber] = useState("");
+  const [requestUrl, setRequestUrl] = useState("");
+  const [request, setRequest] = useState(null);
+  const [verifyHash, setVerifyHash] = useState("");
+  const [verification, setVerification] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState("");
 
-  const handleInputChange = (key, val) => {
-    setBillAmounts({ ...billAmounts, [key]: val });
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const encoded = params.get("request");
+    if (encoded) {
+      const decoded = decodeRequest(encoded);
+      if (decoded?.amount && decoded?.recipient && isAddress(decoded.recipient)) {
+        setRequest(decoded);
+        setMode("pay");
+      }
+    }
+  }, []);
+
+  const amountUnits = useMemo(() => {
+    try {
+      return amount ? parseUnits(amount, 6) : 0n;
+    } catch {
+      return null;
+    }
+  }, [amount]);
+
+  const createRequest = () => {
+    setNotice("");
+    if (!isConnected || !address) return setNotice("connect your Arc wallet first.");
+    if (chainId !== arcTestnet.id) return setNotice("switch your wallet to Arc Testnet.");
+    if (!amountUnits || amountUnits <= 0n) return setNotice("enter a valid USDC amount.");
+    if (!invoiceNumber.trim()) return setNotice("enter an invoice or payment reference.");
+
+    const recipientAddress = recipient.trim() || address;
+    if (!isAddress(recipientAddress)) return setNotice("enter a valid recipient address.");
+
+    const payload = {
+      version: 1,
+      network: "arc-testnet",
+      token: USDC,
+      amount: amount,
+      recipient: recipientAddress,
+      reference: invoiceNumber.trim(),
+      description: description.trim(),
+      createdAt: new Date().toISOString(),
+    };
+    const url = `${window.location.origin}/?request=${encodeRequest(payload)}`;
+    setRequestUrl(url);
+    setRequest(payload);
+    setMode("pay");
+    setNotice("payment request created from your real wallet address.");
   };
 
-  // FULLY CORRECTED BROADCASTER: CLEAR INPUTS ON SUCCESS
-  const executeBlockchainTransfer = async (targetTitle, targetRecipient, targetAmount, keyName = null) => {
-    if (!isConnected) return alert("Pehle Wallet Connect Kijiye Bhai!");
-    if (!targetRecipient || !targetAmount || isNaN(targetAmount) || parseFloat(targetAmount) <= 0) {
-      return alert("Bhai, pehle amount box mein sahi value type kijiye!");
+  const payRequest = async () => {
+    if (!request) return;
+    setNotice("");
+    if (!isConnected || !address) return setNotice("connect your wallet first.");
+    if (chainId !== arcTestnet.id) {
+      await switchChainAsync({ chainId: arcTestnet.id });
+      return;
     }
+    if (!isAddress(request.recipient)) return setNotice("payment request has an invalid recipient.");
 
     try {
-      setLoading(true);
-      const tx = await writeContractAsync({
-        address: "0x3600000000000000000000000000000000000000",
-        abi: [{
-          name: "transfer",
-          type: "function",
-          stateMutability: "nonpayable",
-          inputs: [
-            { name: "recipient", type: "address" },
-            { name: "amount", type: "uint256" }
-          ],
-          outputs: [{ name: "", type: "bool" }]
-        }],
+      setBusy(true);
+      const value = parseUnits(request.amount, 6);
+      await writeContractAsync({
+        address: USDC,
+        abi: transferAbi,
         functionName: "transfer",
-        args: [targetRecipient, parseUnits(targetAmount, 6)],
+        args: [request.recipient, value],
       });
-      
-      const newTx = {
-        title: targetTitle,
-        type: "Expense",
-        amount: targetAmount,
-        date: "Just Now",
-        hash: tx
-      };
-
-      setHistory([newTx, ...history]);
-      alert(`${targetTitle} Successful! Ledger Updated.`);
-      
-      // FIXING BALANCE/AMOUNT SHOW ISSUE: Success hote hi inputs ko automatic reset aur khali karna
-      if (keyName) {
-        setBillAmounts(prev => ({ ...prev, [keyName]: "" }));
-      } else {
-        // Agar main send box se transfer hua hai toh unhe clear karo
-        setSendAddress("");
-        setSendAmount("");
-      }
-
-      setTimeout(() => refetch(), 3000);
     } catch (error) {
-      console.error(error);
-      alert("Transaction Declined!");
+      setNotice(error?.shortMessage || error?.message || "transaction was rejected.");
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   };
 
-  const handleAiChat = () => {
-    const cmd = aiCommand.toLowerCase();
-    if (cmd.includes("send")) {
-      setShowSendBox(true);
-    } else {
-      setAiResponse("🤖 AI Neuro-Agent: Send system update fixed. Ab success hote hi purana data input fields se automatic saaf ho jayega.");
+  useEffect(() => {
+    if (isConfirmed) {
+      refetchBalance();
+      setNotice("transaction confirmed on Arc. you can now verify the payment evidence.");
+    }
+  }, [isConfirmed, refetchBalance]);
+
+  const verifyPayment = async () => {
+    setNotice("");
+    setVerification(null);
+    if (!publicClient) return setNotice("Arc RPC is not available yet.");
+    if (!verifyHash.trim().startsWith("0x")) return setNotice("enter the transaction hash.");
+
+    try {
+      setBusy(true);
+      const hash = verifyHash.trim();
+      const [tx, receipt] = await Promise.all([
+        publicClient.getTransaction({ hash }),
+        publicClient.getTransactionReceipt({ hash }),
+      ]);
+
+      const logs = parseEventLogs({
+        abi: transferAbi,
+        logs: receipt.logs,
+        eventName: "Transfer",
+        strict: false,
+      });
+      const transfer = logs.find((log) => log.address.toLowerCase() === USDC.toLowerCase());
+      const expectedAmount = request?.amount ? parseUnits(request.amount, 6) : null;
+      const amountMatch = expectedAmount !== null && transfer ? transfer.args.value === expectedAmount : false;
+      const recipientMatch = Boolean(transfer && request && transfer.args.to?.toLowerCase() === request.recipient.toLowerCase());
+      const tokenMatch = Boolean(transfer && transfer.address.toLowerCase() === USDC.toLowerCase());
+      const success = receipt.status === "success";
+      const networkMatch = tx.chainId === arcTestnet.id;
+      const verified = Boolean(success && tokenMatch && amountMatch && recipientMatch && networkMatch);
+
+      setVerification({
+        verified,
+        success,
+        networkMatch,
+        tokenMatch,
+        amountMatch,
+        recipientMatch,
+        sender: transfer?.args.from || tx.from,
+        recipient: transfer?.args.to || tx.to,
+        amount: transfer ? Number(transfer.args.value) / 1_000_000 : null,
+        blockNumber: receipt.blockNumber.toString(),
+        hash,
+      });
+      setNotice(verified ? "payment independently verified from Arc transaction evidence." : "transaction found, but one or more payment checks did not match.");
+    } catch (error) {
+      setNotice(error?.shortMessage || error?.message || "could not verify this transaction on Arc.");
+    } finally {
+      setBusy(false);
     }
   };
+
+  const explorerUrl = txHash ? `${arcTestnet.blockExplorers.default.url}/tx/${txHash}` : null;
 
   return (
-    <main style={{ backgroundColor: "#000000", color: "#ffffff", minHeight: "100vh", padding: "1.2rem 1.2rem 4rem 1.2rem", fontFamily: "sans-serif" }}>
-      {/* HEADER */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "2px solid #111", paddingBottom: "1rem", marginBottom: "1.5rem" }}>
-        <h1 style={{ color: "#38bdf8", fontSize: "1.6rem", fontWeight: "bold" }}>⚡ BillFlow</h1>
-        <ConnectButton />
-      </div>
-
-      {/* OVERVIEW PANEL */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "1rem", marginBottom: "1.5rem" }}>
-        <div style={{ background: "linear-gradient(145deg, #050505, #111111)", padding: "1.2rem", borderRadius: "16px", border: "1px solid #222" }}>
-          <h2 style={{ fontSize: "0.85rem", color: "#64748b", fontWeight: "bold", textTransform: "uppercase" }}>📊 Live Crypto Terminal</h2>
-          <div style={{ fontSize: "1.8rem", fontWeight: "bold", color: "#4ade80", marginTop: "0.5rem" }}>
-            {isConnected ? `${balanceData?.formatted || "0.00000"} USDC` : "Disconnected"}
+    <main className="shell">
+      <header className="topbar">
+        <div className="brand">
+          <div className="brand-mark">FP</div>
+          <div>
+            <strong>FlowProof</strong>
+            <span>payment evidence on Arc</span>
           </div>
         </div>
+        <ConnectButton chainStatus="icon" showBalance={false} />
+      </header>
 
-        <div style={{ background: "#0a0a0a", padding: "1.2rem", borderRadius: "16px", border: "1px solid #222", display: "flex", gap: "1rem", alignItems: "center" }}>
-          <button onClick={() => { setShowSendBox(!showSendBox); setShowReceiveBox(false); }} style={{ flex: 1, background: showSendBox ? "#fbbf24" : "#38bdf8", color: "#000", border: "none", padding: "0.9rem", borderRadius: "12px", fontWeight: "bold", fontSize: "0.95rem", cursor: "pointer" }}>
-            🚀 {showSendBox ? "Close Send" : "Send USDC"}
-          </button>
-          <button onClick={() => { setShowReceiveBox(!showReceiveBox); setShowSendBox(false); }} style={{ flex: 1, background: "transparent", color: "#38bdf8", border: "2px solid #38bdf8", padding: "0.85rem", borderRadius: "12px", fontWeight: "bold", fontSize: "0.95rem", cursor: "pointer" }}>
-            📥 {showReceiveBox ? "Close QR" : "Receive QR"}
-          </button>
+      <section className="hero">
+        <div className="eyebrow">ARC TESTNET · REAL USDC · NON-CUSTODIAL</div>
+        <h1>verify the payment, not the screenshot.</h1>
+        <p>create a payment request, settle it with real USDC, then prove the amount, recipient, token and transaction status directly from Arc.</p>
+        <div className="hero-actions">
+          <button className={mode === "create" ? "primary" : "secondary"} onClick={() => setMode("create")}>Create request</button>
+          <button className={mode === "verify" ? "primary" : "secondary"} onClick={() => setMode("verify")}>Verify payment</button>
         </div>
-      </div>
+      </section>
 
-      {/* SEND TERMINAL */}
-      {showSendBox && (
-        <div style={{ background: "#0c0a09", padding: "1.5rem", borderRadius: "16px", border: "2px dashed #38bdf8", marginBottom: "1.5rem" }}>
-          <h3 style={{ color: "#38bdf8", fontSize: "1.1rem", fontWeight: "bold", marginBottom: "1rem" }}>📤 Instant Web3 Fund Transfer</h3>
-          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-            <div>
-              <label style={{ fontSize: "0.8rem", color: "#a8a29e", display: "block", marginBottom: "0.3rem" }}>Recipient Wallet Address</label>
-              <input type="text" value={sendAddress} onChange={(e) => setSendAddress(e.target.value)} placeholder="Enter target 0x address..." style={{ width: "100%", background: "#000", border: "1px solid #444", padding: "0.7rem", borderRadius: "8px", color: "#fff" }} />
-            </div>
-            <div>
-              <label style={{ fontSize: "0.8rem", color: "#a8a29e", display: "block", marginBottom: "0.3rem" }}>Amount (USDC)</label>
-              <input type="number" value={sendAmount} onChange={(e) => setSendAmount(e.target.value)} placeholder="0.00" style={{ width: "100%", background: "#000", border: "1px solid #444", padding: "0.7rem", borderRadius: "8px", color: "#fff" }} />
-            </div>
-            <button onClick={() => executeBlockchainTransfer("Direct Fund Transfer", sendAddress, sendAmount)} disabled={loading} style={{ background: "#4ade80", color: "#000", border: "none", padding: "0.8rem", borderRadius: "8px", fontWeight: "bold", marginTop: "0.5rem", cursor: "pointer" }}>
-              {loading ? "Confirming..." : "Broadcast Transfer"}
-            </button>
+      <section className="status-strip">
+        <div><span className="dot live" /> Arc Testnet</div>
+        <div>Chain <b>5042002</b></div>
+        <div>USDC <b>{balance?.formatted || "—"}</b></div>
+        <div>Wallet <b>{shortAddress(address)}</b></div>
+      </section>
+
+      {notice && <div className="notice">{notice}</div>}
+
+      {mode === "create" && (
+        <section className="workspace two-col">
+          <div className="panel">
+            <div className="panel-head"><span>01</span><div><h2>Create payment request</h2><p>the recipient is taken from your connected wallet unless you specify another address.</p></div></div>
+            <label>Invoice / reference<input value={invoiceNumber} onChange={(e) => setInvoiceNumber(e.target.value)} placeholder="INV-2026-001" /></label>
+            <label>Amount (USDC)<input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="25.00" /></label>
+            <label>Recipient wallet<input value={recipient} onChange={(e) => setRecipient(e.target.value)} placeholder={address || "0x…"} /></label>
+            <label>Description <span className="optional">optional</span><input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="website development" /></label>
+            <button className="primary wide" onClick={createRequest}>Create real payment link</button>
           </div>
-        </div>
+
+          <div className="panel evidence-panel">
+            <div className="panel-head"><span>02</span><div><h2>What gets verified</h2><p>nothing here is pre-filled with fake transaction history.</p></div></div>
+            <div className="checks">
+              <div><b>amount</b><span>expected vs actual Transfer value</span></div>
+              <div><b>recipient</b><span>requested wallet vs on-chain destination</span></div>
+              <div><b>token</b><span>Arc USDC contract address</span></div>
+              <div><b>transaction</b><span>receipt status, chain ID and block</span></div>
+            </div>
+            <div className="truth">REAL DATA ONLY <span>•</span> verification reads Arc RPC</div>
+          </div>
+        </section>
       )}
 
-      {/* RECEIVE GATEWAY */}
-      {showReceiveBox && (
-        <div style={{ background: "#0c0a09", padding: "1.5rem", borderRadius: "16px", border: "2px dashed #4ade80", marginBottom: "1.5rem", display: "flex", flexDirection: "column", alignItems: "center", gap: "1rem" }}>
-          <h3 style={{ color: "#4ade80", fontSize: "1.1rem", fontWeight: "bold" }}>📥 Deposit Gateway (Arc Testnet)</h3>
-          <div style={{ background: "#fff", padding: "0.8rem", borderRadius: "12px", width: "140px", height: "140px", display: "flex", justifyContent: "center", alignItems: "center" }}>
-            <div style={{ width: "120px", height: "120px", background: "repeating-linear-gradient(45deg, #000, #000 10px, #fff 10px, #fff 20px)" }}></div>
+      {mode === "pay" && request && (
+        <section className="workspace two-col">
+          <div className="panel payment-card">
+            <div className="eyebrow">PAYMENT REQUEST</div>
+            <div className="amount">{request.amount} <span>USDC</span></div>
+            <p className="reference">{request.reference}</p>
+            {request.description && <p className="description">{request.description}</p>}
+            <div className="meta-row"><span>Pay to</span><b>{shortAddress(request.recipient)}</b></div>
+            <div className="meta-row"><span>Network</span><b>Arc Testnet</b></div>
+            <button className="primary wide" onClick={payRequest} disabled={busy || isWriting || isConfirming}>{isWriting || busy ? "waiting for wallet…" : isConfirming ? "confirming on Arc…" : "Pay with USDC"}</button>
+            {txHash && <div className="tx-result"><span>Transaction</span><a href={explorerUrl} target="_blank" rel="noreferrer">{shortAddress(txHash)}</a></div>}
           </div>
-          <div style={{ width: "100%", textAlign: "center" }}>
-            <p style={{ fontSize: "0.8rem", color: "#94a3b8", wordBreak: "break-all", background: "#000", padding: "0.6rem", borderRadius: "8px", border: "1px solid #222" }}>{address || "Wallet Disconnected!"}</p>
-            <button onClick={() => { navigator.clipboard.writeText(address || ""); alert("Copied!"); }} style={{ background: "#222", color: "#4ade80", border: "1px solid #4ade80", padding: "0.5rem 1rem", borderRadius: "6px", fontSize: "0.85rem", fontWeight: "bold" }}>Copy Address</button>
+          <div className="panel">
+            <div className="panel-head"><span>PROOF</span><div><h2>Settlement evidence</h2><p>after payment, verify the transaction against this request.</p></div></div>
+            <button className="secondary wide" onClick={() => { setVerifyHash(txHash || ""); setMode("verify"); }}>Open verification</button>
+            {requestUrl && <div className="share-box"><span>Shareable request</span><textarea readOnly value={requestUrl} onFocus={(e) => e.target.select()} /></div>}
           </div>
-        </div>
+        </section>
       )}
 
-      {/* AI & TRADING */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "1rem", marginBottom: "1.5rem" }}>
-        <div style={{ background: "#0f172a", padding: "1.2rem", borderRadius: "16px", border: "1px solid #1e293b" }}>
-          <h3 style={{ color: "#fbbf24", fontSize: "0.95rem", fontWeight: "bold", marginBottom: "0.5rem" }}>🤖 AI Neuro-Copilot</h3>
-          <p style={{ fontSize: "0.85rem", color: "#94a3b8", minHeight: "45px", backgroundColor: "#020617", padding: "0.6rem", borderRadius: "8px", border: "1px solid #1e293b", marginBottom: "0.6rem" }}>{aiResponse}</p>
-          <div style={{ display: "flex", gap: "0.5rem" }}>
-            <input type="text" value={aiCommand} onChange={(e) => setAiCommand(e.target.value)} placeholder="Type command here..." style={{ flex: 1, background: "#000", border: "1px solid #334155", padding: "0.7rem", borderRadius: "8px", color: "#fff" }} />
-            <button onClick={handleAiChat} style={{ background: "#fbbf24", color: "#000", border: "none", padding: "0.7rem 1.2rem", borderRadius: "8px", fontWeight: "bold" }}>Ask</button>
+      {mode === "verify" && (
+        <section className="workspace two-col">
+          <div className="panel">
+            <div className="panel-head"><span>VERIFY</span><div><h2>Verify a transaction</h2><p>provide a real Arc transaction hash. FlowProof reads the receipt and USDC Transfer event.</p></div></div>
+            {request && <div className="request-context"><span>Against request</span><b>{request.reference} · {request.amount} USDC</b><small>{request.recipient}</small></div>}
+            <label>Transaction hash<input value={verifyHash} onChange={(e) => setVerifyHash(e.target.value)} placeholder="0x…" /></label>
+            <button className="primary wide" onClick={verifyPayment} disabled={busy}>{busy ? "reading Arc…" : "Verify on Arc"}</button>
           </div>
-        </div>
 
-        <div style={{ background: "#052e16", padding: "1.2rem", borderRadius: "16px", border: "1px solid #064e3b" }}>
-          <h3 style={{ color: "#4ade80", fontSize: "0.95rem", fontWeight: "bold", marginBottom: "0.5rem" }}>🔄 StableFX Micro-Trading</h3>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#000", padding: "0.7rem", borderRadius: "8px", marginBottom: "0.6rem" }}>
-            <select value={swapFrom} onChange={(e) => setSwapFrom(e.target.value)} style={{ background: "transparent", color: "#fff", border: "none", fontWeight: "bold", fontSize: "0.9rem", width: "100%" }}>
-              <option value="EURC" style={{background:"#000"}}>EURC (Euro Coin)</option>
-              <option value="USYC" style={{background:"#000"}}>USYC (Treasury)</option>
-            </select>
-          </div>
-          <button onClick={() => alert("Simulation Trade")} disabled={!isConnected} style={{ width: "100%", background: "#4ade80", color: "#000", border: "none", padding: "0.75rem", borderRadius: "8px", fontWeight: "bold" }}>Execute Stable-Trade</button>
-        </div>
-      </div>
-
-      {/* HISTORY */}
-      <div style={{ background: "#0a0a0a", padding: "1.2rem", borderRadius: "16px", border: "1px solid #222", marginBottom: "1.5rem" }}>
-        <h3 style={{ fontSize: "1.1rem", fontWeight: "bold", color: "#f43f5e", marginBottom: "1rem" }}>📋 Live Expense Tracker & History</h3>
-        <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-          {history.map((item, idx) => (
-            <div key={idx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#020617", padding: "0.8rem 1rem", borderRadius: "10px", border: "1px solid #111" }}>
-              <div>
-                <h4 style={{ fontSize: "0.95rem", fontWeight: "bold", color: "#fff" }}>{item.title}</h4>
-                <p style={{ fontSize: "0.75rem", color: "#64748b", marginTop: "0.2rem" }}>{item.date} • <span style={{ color: "#f43f5e" }}>Expense</span></p>
+          <div className="panel">
+            <div className="panel-head"><span>RESULT</span><div><h2>Verification result</h2><p>every check must pass before FlowProof says verified.</p></div></div>
+            {!verification ? <div className="empty">No verification run yet.<br /><span>Paste a real transaction hash to begin.</span></div> : (
+              <div className="verification-result">
+                <div className={verification.verified ? "result-banner verified" : "result-banner failed"}>{verification.verified ? "VERIFIED PAYMENT" : "NOT VERIFIED"}</div>
+                <div className="checks compact">
+                  <div><b>transaction success</b><span>{verification.success ? "PASS" : "FAIL"}</span></div>
+                  <div><b>Arc network</b><span>{verification.networkMatch ? "PASS" : "FAIL"}</span></div>
+                  <div><b>USDC token</b><span>{verification.tokenMatch ? "PASS" : "FAIL"}</span></div>
+                  <div><b>amount match</b><span>{verification.amountMatch ? "PASS" : "FAIL"}</span></div>
+                  <div><b>recipient match</b><span>{verification.recipientMatch ? "PASS" : "FAIL"}</span></div>
+                </div>
+                <div className="proof-details"><div><span>Sender</span><b>{shortAddress(verification.sender)}</b></div><div><span>Recipient</span><b>{shortAddress(verification.recipient)}</b></div><div><span>Amount</span><b>{verification.amount ?? "—"} USDC</b></div><div><span>Block</span><b>{verification.blockNumber}</b></div></div>
+                <a className="explorer-link" href={`${arcTestnet.blockExplorers.default.url}/tx/${verification.hash}`} target="_blank" rel="noreferrer">view transaction evidence on ArcScan ↗</a>
               </div>
-              <div style={{ textAlign: "right", paddingRight: "0.4rem" }}>
-                <span style={{ fontSize: "1rem", fontWeight: "bold", color: "#fff" }}>-{item.amount} USDC</span>
-                <p style={{ fontSize: "0.75rem", marginTop: "0.2rem" }}>
-                  <a href={`https://testnet.arcscan.app/tx/${item.hash}`} target="_blank" rel="noreferrer" style={{ color: "#38bdf8", textDecoration: "none", fontWeight: "bold" }}>Verify ↗</a>
-                </p>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
+            )}
+          </div>
+        </section>
+      )}
 
-      {/* UTILITIES */}
-      <div style={{ marginBottom: "1.5rem" }}>
-        <h3 style={{ fontSize: "1.1rem", fontWeight: "bold", color: "#38bdf8", marginBottom: "0.8rem" }}>⚡ High-Frequency Utilities</h3>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "1rem" }}>
-          <div style={{ background: "#080808", padding: "1.2rem", borderRadius: "14px", border: "1px solid #1c1c1c", display: "flex", flexDirection: "column", gap: "0.6rem" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}><span>🛒</span><h4 style={{ fontSize: "1rem", fontWeight: "bold" }}>Grocery Bill</h4></div>
-            <input type="number" value={billAmounts.grocery} onChange={(e) => handleInputChange("grocery", e.target.value)} placeholder="0.00" style={{ background: "#000", border: "1px solid #222", padding: "0.5rem", borderRadius: "6px", color: "#fff" }} />
-            <button onClick={() => executeBlockchainTransfer("Grocery Bill", "0xbcf83d3b112cbf43b19904e376dd8dee01fe2758", billAmounts.grocery, "grocery")} disabled={!isConnected} style={{ width: "100%", background: "#111", color: "#38bdf8", border: "1px solid #38bdf8", padding: "0.6rem", borderRadius: "8px", fontWeight: "bold" }}>Pay Now</button>
-          </div>
-          <div style={{ background: "#080808", padding: "1.2rem", borderRadius: "14px", border: "1px solid #1c1c1c", display: "flex", flexDirection: "column", gap: "0.6rem" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}><span>⛽</span><h4 style={{ fontSize: "1rem", fontWeight: "bold" }}>Petrol/Gas</h4></div>
-            <input type="number" value={billAmounts.petrol} onChange={(e) => handleInputChange("petrol", e.target.value)} placeholder="0.00" style={{ background: "#000", border: "1px solid #222", padding: "0.5rem", borderRadius: "6px", color: "#fff" }} />
-            <button onClick={() => executeBlockchainTransfer("Petrol/Gas", "0xbcf83d3b112cbf43b19904e376dd8dee01fe2758", billAmounts.petrol, "petrol")} disabled={!isConnected} style={{ width: "100%", background: "#111", color: "#38bdf8", border: "1px solid #38bdf8", padding: "0.6rem", borderRadius: "8px", fontWeight: "bold" }}>Pay Now</button>
-          </div>
-          <div style={{ background: "#080808", padding: "1.2rem", borderRadius: "14px", border: "1px solid #1c1c1c", display: "flex", flexDirection: "column", gap: "0.6rem" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}><span>📱</span><h4 style={{ fontSize: "1rem", fontWeight: "bold" }}>Mobile/Internet</h4></div>
-            <input type="number" value={billAmounts.internet} onChange={(e) => handleInputChange("internet", e.target.value)} placeholder="0.00" style={{ background: "#000", border: "1px solid #222", padding: "0.5rem", borderRadius: "6px", color: "#fff" }} />
-            <button onClick={() => executeBlockchainTransfer("Mobile/Internet", "0xbcf83d3b112cbf43b19904e376dd8dee01fe2758", billAmounts.internet, "internet")} disabled={!isConnected} style={{ width: "100%", background: "#111", color: "#38bdf8", border: "1px solid #38bdf8", padding: "0.6rem", borderRadius: "8px", fontWeight: "bold" }}>Pay Now</button>
-          </div>
-        </div>
-      </div>
-
-      {/* OPERATIONAL COSTS */}
-      <div style={{ paddingBottom: "1rem" }}>
-        <h3 style={{ fontSize: "1.1rem", fontWeight: "bold", color: "#94a3b8", marginBottom: "0.8rem" }}>📅 Operational Costs (All Live)</h3>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "1rem" }}>
-          <div style={{ background: "#050505", padding: "1.2rem", borderRadius: "14px", border: "1px solid #222", display: "flex", flexDirection: "column", gap: "0.6rem" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}><span>💡</span><h4 style={{ fontSize: "0.95rem", fontWeight: "bold" }}>Electricity Bill</h4></div>
-            <input type="number" value={billAmounts.electricity} onChange={(e) => handleInputChange("electricity", e.target.value)} placeholder="0.00" style={{ background: "#000", border: "1px solid #334155", padding: "0.5rem", borderRadius: "6px", color: "#fff" }} />
-            <button onClick={() => executeBlockchainTransfer("Electricity Bill", "0xbcf83d3b112cbf43b19904e376dd8dee01fe2758", billAmounts.electricity, "electricity")} disabled={!isConnected || loading} style={{ width: "100%", background: "#38bdf8", color: "#000", border: "none", padding: "0.6rem", borderRadius: "8px", fontWeight: "bold" }}>Pay Bill</button>
-          </div>
-          <div style={{ background: "#050505", padding: "1.2rem", borderRadius: "14px", border: "1px solid #222", display: "flex", flexDirection: "column", gap: "0.6rem" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}><span>💧</span><h4 style={{ fontSize: "0.95rem", fontWeight: "bold" }}>Water Bill</h4></div>
-            <input type="number" value={billAmounts.water} onChange={(e) => handleInputChange("water", e.target.value)} placeholder="0.00" style={{ background: "#000", border: "1px solid #334155", padding: "0.5rem", borderRadius: "6px", color: "#fff" }} />
-            <button onClick={() => executeBlockchainTransfer("Water Bill", "0xbcf83d3b112cbf43b19904e376dd8dee01fe2758", billAmounts.water, "water")} disabled={!isConnected || loading} style={{ width: "100%", background: "#38bdf8", color: "#000", border: "none", padding: "0.6rem", borderRadius: "8px", fontWeight: "bold" }}>Pay Bill</button>
-          </div>
-          <div style={{ background: "#050505", padding: "1.2rem", borderRadius: "14px", border: "1px solid #222", display: "flex", flexDirection: "column", gap: "0.6rem" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}><span>🏠</span><h4 style={{ fontSize: "0.95rem", fontWeight: "bold" }}>Rent Payment</h4></div>
-            <input type="number" value={billAmounts.rent} onChange={(e) => handleInputChange("rent", e.target.value)} placeholder="0.00" style={{ background: "#000", border: "1px solid #334155", padding: "0.5rem", borderRadius: "6px", color: "#fff" }} />
-            <button onClick={() => executeBlockchainTransfer("Rent Payment", "0xbcf83d3b112cbf43b19904e376dd8dee01fe2758", billAmounts.rent, "rent")} disabled={!isConnected || loading} style={{ width: "100%", background: "#38bdf8", color: "#000", border: "none", padding: "0.6rem", borderRadius: "8px", fontWeight: "bold" }}>Pay Bill</button>
-          </div>
-        </div>
-      </div>
+      <footer><span>FlowProof</span><span>Arc Testnet · test USDC only</span><span>no custody · no fake history</span></footer>
     </main>
   );
 }
