@@ -1,46 +1,62 @@
-# Billflow
+# FlowProof
 
-A modern **wallet-connected payment interface** built with Next.js and the Ethereum wallet tooling ecosystem.
+**payments you can prove.**
 
-## Product goal
+FlowProof is a non-custodial payment verification workspace for real USDC transfers on Arc Testnet.
 
-Billflow explores a clean payment UX where wallet connection, account state and on-chain actions can live inside a polished application surface.
+## What it does
+
+1. Connect an EVM wallet.
+2. Create a payment request with an amount, recipient and reference.
+3. Share the generated request URL.
+4. Pay the request with real Arc Testnet USDC.
+5. Verify a transaction directly against Arc RPC.
+6. Mark a payment verified only when the transaction, network, token, amount and recipient all match.
+
+## Verification model
+
+FlowProof does not ship with fake transaction history or simulated settlement. Verification reads the transaction receipt and the USDC `Transfer` event from Arc Testnet.
+
+A payment is considered verified only when:
+
+- the transaction receipt succeeds;
+- the transaction is on Arc Testnet;
+- the Arc USDC contract matches;
+- the transferred amount matches the request;
+- the on-chain recipient matches the request.
+
+## Arc Testnet
+
+- Chain ID: `5042002`
+- RPC: `https://rpc.testnet.arc.network`
+- Explorer: `https://testnet.arcscan.app`
+- USDC: `0x3600000000000000000000000000000000000000`
+
+Use test USDC only. Never enter a private key or seed phrase into the application.
 
 ## Stack
 
 - Next.js 16
 - React 19
-- TypeScript
+- TypeScript / JavaScript
 - Tailwind CSS 4
 - Wagmi
 - Viem
 - RainbowKit
-- WalletConnect
-- TanStack Query
-
-## Core ideas
-
-- Wallet-first onboarding
-- Reusable Web3 provider architecture
-- Transaction-ready application patterns
-- Responsive product UI
-- Separation between interface state and wallet state
 
 ## Development
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 
-Open `http://localhost:3000`.
+Then open `http://localhost:3000`.
 
 ## Project status
 
-This is an active product-engineering workspace. Treat chain addresses, contracts and transaction behavior as environment-specific and validate them before production use.
+The current MVP is built in the `flowproof-mvp` branch. Production deployment remains separate until the real Arc Testnet payment path has been manually exercised with a funded test wallet.
 
 ## Builder
 
 **AMRISH KUMAR DWIVEDI**
-
-[GitHub profile](https://github.com/AMRISHKUMARDWIVEDI08) · [Repository](https://github.com/AMRISHKUMARDWIVEDI08/billflow)
