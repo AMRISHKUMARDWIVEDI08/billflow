@@ -1,30 +1,46 @@
-# Billflow
+# BillFlow
 
-A modern **wallet-connected payment interface** built with Next.js and the Ethereum wallet tooling ecosystem.
+BillFlow is a wallet-first USDC payment experience built on **Arc Testnet**.
 
 ## Product goal
 
-Billflow explores a clean payment UX where wallet connection, account state and on-chain actions can live inside a polished application surface.
+Make a small, understandable payment surface for sending and receiving USDC without pretending that simulated actions are real payments.
+
+## Current product flow
+
+1. Connect an EVM wallet.
+2. Detect whether the wallet is on Arc Testnet.
+3. Read the connected wallet's USDC balance.
+4. Choose a common payment category.
+5. Enter a recipient and amount.
+6. Validate the address and balance before asking the wallet to sign.
+7. Submit a real ERC-20 USDC transfer on Arc.
+8. Wait for transaction confirmation before recording the payment locally.
+9. Share/copy the wallet address for receiving USDC.
+10. Open confirmed transactions in the Arc Testnet explorer.
+
+## Arc-specific implementation
+
+- Arc Testnet chain ID: `5042002`
+- Arc Testnet RPC: `https://rpc.testnet.arc.network`
+- USDC ERC-20 interface: `0x3600000000000000000000000000000000000000`
+- USDC ERC-20 amount precision: 6 decimals
+- Arc native USDC gas uses a different 18-decimal native representation; BillFlow uses the ERC-20 interface for application payments.
 
 ## Stack
 
 - Next.js 16
 - React 19
-- TypeScript
+- TypeScript/JavaScript
 - Tailwind CSS 4
 - Wagmi
 - Viem
 - RainbowKit
-- WalletConnect
 - TanStack Query
 
-## Core ideas
+## Important product rule
 
-- Wallet-first onboarding
-- Reusable Web3 provider architecture
-- Transaction-ready application patterns
-- Responsive product UI
-- Separation between interface state and wallet state
+BillFlow must never display fake successful transactions, fake balances, or simulated transfers as if they were real. On-chain state is the source of truth for payments; the local activity list is only a convenience record of confirmed payments made through this interface.
 
 ## Development
 
@@ -35,12 +51,8 @@ npm run dev
 
 Open `http://localhost:3000`.
 
-## Project status
-
-This is an active product-engineering workspace. Treat chain addresses, contracts and transaction behavior as environment-specific and validate them before production use.
-
 ## Builder
 
 **AMRISH KUMAR DWIVEDI**
 
-[GitHub profile](https://github.com/AMRISHKUMARDWIVEDI08) · [Repository](https://github.com/AMRISHKUMARDWIVEDI08/billflow)
+[GitHub](https://github.com/AMRISHKUMARDWIVEDI08) · [BillFlow repository](https://github.com/AMRISHKUMARDWIVEDI08/billflow)
