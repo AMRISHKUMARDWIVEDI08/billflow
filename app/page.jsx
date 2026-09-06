@@ -1,263 +1,166 @@
 "use client";
-import React, { useState } from "react";
+
+import { useEffect, useMemo, useState } from "react";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
-import { useAccount, useBalance, useWriteContract } from "wagmi";
-import { parseUnits } from "viem";
+import {
+  useAccount,
+  useBalance,
+  useChainId,
+  useSwitchChain,
+  useWaitForTransactionReceipt,
+  useWriteContract,
+} from "wagmi";
+import { isAddress, parseUnits } from "viem";
+import { arcTestnet } from "@/lib/wagmi-config";
+
+const USDC_ADDRESS = "0x3600000000000000000000000000000000000000";
+const USDC_DECIMALS = 6;
+const erc20Abi = [{ name: "transfer", type: "function", stateMutability: "nonpayable", inputs: [{ name: "recipient", type: "address" }, { name: "amount", type: "uint256" }], outputs: [{ name: "", type: "bool" }] }];
+const categories = [
+  { key: "grocery", label: "Groceries", icon: "🛒" },
+  { key: "electricity", label: "Electricity", icon: "⚡" },
+  { key: "internet", label: "Internet", icon: "🌐" },
+  { key: "rent", label: "Rent", icon: "🏠" },
+  { key: "school", label: "School", icon: "🎓" },
+  { key: "insurance", label: "Insurance", icon: "🛡️" },
+];
+
+function shortAddress(value) {
+  if (!value) return "—";
+  return `${value.slice(0, 6)}…${value.slice(-4)}`;
+}
+
+function formatAmount(value) {
+  return new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 6 }).format(Number(value || 0));
+}
 
 export default function Home() {
   const { address, isConnected } = useAccount();
-  const [loading, setLoading] = useState(false);
-  const [aiCommand, setAiCommand] = useState("");
-  const [aiResponse, setAiResponse] = useState("Bhai, main aapka BillFlow AI assistant hoon. Boliye kya help karu?");
-  const [swapFrom, setSwapFrom] = useState("EURC");
+  const chainId = useChainId();
+  const { switchChainAsync } = useSwitchChain();
+  const { writeContractAsync, isPending: isWalletPending } = useWriteContract();
+  const [recipient, setRecipient] = useState("");
+  const [amount, setAmount] = useState("");
+  const [billName, setBillName] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState("others");
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [txHash, setTxHash] = useState();
+  const [activity, setActivity] = useState([]);
+  const [showReceive, setShowReceive] = useState(false);
 
-  // Send Modules ke UI states
-  const [showSendBox, setShowSendBox] = useState(false);
-  const [showReceiveBox, setShowReceiveBox] = useState(false);
-  const [sendAddress, setSendAddress] = useState("");
-  const [sendAmount, setSendAmount] = useState("");
+  const { data: balanceData, isLoading: balanceLoading, refetch: refetchBalance } = useBalance({ address, token: USDC_ADDRESS, chainId: arcTestnet.id, query: { enabled: Boolean(address) } });
+  const { isLoading: receiptLoading, isSuccess: receiptSuccess } = useWaitForTransactionReceipt({ hash: txHash });
+  const onArc = chainId === arcTestnet.id;
+  const busy = isWalletPending || receiptLoading;
 
-  // Custom utility inputs tracking
-  const [billAmounts, setBillAmounts] = useState({
-    grocery: "",
-    petrol: "",
-    internet: "",
-    electricity: "",
-    water: "",
-    rent: "",
-    school: "",
-    insurance: "",
-    others: ""
-  });
-
-  const [history, setHistory] = useState([
-    { title: "Grocery Payment", type: "Expense", amount: "1.50", date: "Today, 02:15 PM", hash: "0x3bfbab5d5ce0d1a5d682cbc742d3940cf59db0369d173b71ba2a3b8f43bfbcb1" },
-    { title: "Petrol/Gas Refill", type: "Expense", amount: "3.00", date: "Yesterday, 06:45 PM", hash: "0xe15d6dbb50178f60930b8a3e3e775f3c022505ea2e351b6c2c2985d2405c8ebc" }
-  ]);
-
-  const { data: balanceData, refetch } = useBalance({
-    address,
-    token: "0x3600000000000000000000000000000000000000",
-    chainId: 5042002
-  });
-
-  const { writeContractAsync } = useWriteContract();
-
-  const handleInputChange = (key, val) => {
-    setBillAmounts({ ...billAmounts, [key]: val });
-  };
-
-  // FULLY CORRECTED BROADCASTER: CLEAR INPUTS ON SUCCESS
-  const executeBlockchainTransfer = async (targetTitle, targetRecipient, targetAmount, keyName = null) => {
-    if (!isConnected) return alert("Pehle Wallet Connect Kijiye Bhai!");
-    if (!targetRecipient || !targetAmount || isNaN(targetAmount) || parseFloat(targetAmount) <= 0) {
-      return alert("Bhai, pehle amount box mein sahi value type kijiye!");
-    }
-
+  useEffect(() => {
     try {
-      setLoading(true);
-      const tx = await writeContractAsync({
-        address: "0x3600000000000000000000000000000000000000",
-        abi: [{
-          name: "transfer",
-          type: "function",
-          stateMutability: "nonpayable",
-          inputs: [
-            { name: "recipient", type: "address" },
-            { name: "amount", type: "uint256" }
-          ],
-          outputs: [{ name: "", type: "bool" }]
-        }],
-        functionName: "transfer",
-        args: [targetRecipient, parseUnits(targetAmount, 6)],
-      });
-      
-      const newTx = {
-        title: targetTitle,
-        type: "Expense",
-        amount: targetAmount,
-        date: "Just Now",
-        hash: tx
-      };
-
-      setHistory([newTx, ...history]);
-      alert(`${targetTitle} Successful! Ledger Updated.`);
-      
-      // FIXING BALANCE/AMOUNT SHOW ISSUE: Success hote hi inputs ko automatic reset aur khali karna
-      if (keyName) {
-        setBillAmounts(prev => ({ ...prev, [keyName]: "" }));
-      } else {
-        // Agar main send box se transfer hua hai toh unhe clear karo
-        setSendAddress("");
-        setSendAmount("");
-      }
-
-      setTimeout(() => refetch(), 3000);
-    } catch (error) {
-      console.error(error);
-      alert("Transaction Declined!");
-    } finally {
-      setLoading(false);
+      const saved = window.localStorage.getItem("billflow-activity");
+      if (saved) setActivity(JSON.parse(saved));
+    } catch {
+      // Ignore malformed local activity.
     }
-  };
+  }, []);
 
-  const handleAiChat = () => {
-    const cmd = aiCommand.toLowerCase();
-    if (cmd.includes("send")) {
-      setShowSendBox(true);
-    } else {
-      setAiResponse("🤖 AI Neuro-Agent: Send system update fixed. Ab success hote hi purana data input fields se automatic saaf ho jayega.");
+  useEffect(() => {
+    window.localStorage.setItem("billflow-activity", JSON.stringify(activity.slice(0, 20)));
+  }, [activity]);
+
+  useEffect(() => {
+    if (!receiptSuccess || !txHash) return;
+    const entry = { id: txHash, title: billName.trim() || "USDC payment", category: selectedCategory, amount, hash: txHash, timestamp: new Date().toISOString() };
+    setActivity((current) => [entry, ...current.filter((item) => item.hash !== txHash)].slice(0, 20));
+    setRecipient("");
+    setAmount("");
+    setBillName("");
+    setNotice("Payment confirmed on Arc.");
+    setError("");
+    refetchBalance();
+  }, [receiptSuccess, txHash, billName, selectedCategory, amount, refetchBalance]);
+
+  const balance = balanceData?.formatted || "0";
+  const totalLocalSpend = useMemo(() => activity.reduce((sum, item) => sum + Number(item.amount || 0), 0), [activity]);
+
+  async function handlePayment(event) {
+    event.preventDefault();
+    setError("");
+    setNotice("");
+    if (!isConnected || !address) return setError("Connect your wallet first.");
+    if (!onArc) {
+      try { await switchChainAsync({ chainId: arcTestnet.id }); } catch { setError("Switch to Arc Testnet in your wallet to continue."); }
+      return;
     }
-  };
+    if (!isAddress(recipient)) return setError("Enter a valid recipient wallet address.");
+    const numericAmount = Number(amount);
+    if (!Number.isFinite(numericAmount) || numericAmount <= 0) return setError("Enter a payment amount greater than 0 USDC.");
+    if (balanceData && numericAmount > Number(balanceData.formatted)) return setError("Insufficient USDC balance.");
+    try {
+      const hash = await writeContractAsync({ address: USDC_ADDRESS, abi: erc20Abi, functionName: "transfer", args: [recipient, parseUnits(amount, USDC_DECIMALS)] });
+      setTxHash(hash);
+      setNotice("Transaction submitted. Waiting for Arc confirmation…");
+    } catch (paymentError) {
+      console.error(paymentError);
+      setError("Transaction was rejected or could not be submitted. No payment was recorded.");
+    }
+  }
+
+  function chooseCategory(category) {
+    setSelectedCategory(category.key);
+    setBillName(category.label);
+    setNotice("");
+    setError("");
+    document.getElementById("payment-form")?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  async function copyAddress() {
+    if (!address) return;
+    try { await navigator.clipboard.writeText(address); setNotice("Wallet address copied."); }
+    catch { setError("Could not copy the address. You can select it manually."); }
+  }
 
   return (
-    <main style={{ backgroundColor: "#000000", color: "#ffffff", minHeight: "100vh", padding: "1.2rem 1.2rem 4rem 1.2rem", fontFamily: "sans-serif" }}>
-      {/* HEADER */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "2px solid #111", paddingBottom: "1rem", marginBottom: "1.5rem" }}>
-        <h1 style={{ color: "#38bdf8", fontSize: "1.6rem", fontWeight: "bold" }}>⚡ BillFlow</h1>
-        <ConnectButton />
-      </div>
+    <main className="app-shell">
+      <header className="topbar">
+        <div className="brand-wrap"><div className="brand-mark">B</div><div><div className="brand-name">BillFlow</div><div className="brand-subtitle">simple USDC payments on Arc</div></div></div>
+        <ConnectButton chainStatus="icon" showBalance={false} accountStatus={{ smallScreen: "avatar", largeScreen: "full" }} />
+      </header>
 
-      {/* OVERVIEW PANEL */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "1rem", marginBottom: "1.5rem" }}>
-        <div style={{ background: "linear-gradient(145deg, #050505, #111111)", padding: "1.2rem", borderRadius: "16px", border: "1px solid #222" }}>
-          <h2 style={{ fontSize: "0.85rem", color: "#64748b", fontWeight: "bold", textTransform: "uppercase" }}>📊 Live Crypto Terminal</h2>
-          <div style={{ fontSize: "1.8rem", fontWeight: "bold", color: "#4ade80", marginTop: "0.5rem" }}>
-            {isConnected ? `${balanceData?.formatted || "0.00000"} USDC` : "Disconnected"}
-          </div>
+      <section className="hero-grid">
+        <div className="hero-card">
+          <div className="eyebrow">YOUR BALANCE</div>
+          <div className="balance-row"><span className="balance-value">{isConnected ? (balanceLoading ? "…" : formatAmount(balance)) : "0.00"}</span><span className="currency">USDC</span></div>
+          <div className="wallet-line">{isConnected ? shortAddress(address) : "Wallet not connected"}{isConnected && <span className={onArc ? "status-dot online" : "status-dot"}>{onArc ? "Arc Testnet" : "Wrong network"}</span>}</div>
         </div>
+        <div className="stats-card"><div className="stat-item"><span>Payments recorded</span><strong>{activity.length}</strong></div><div className="stat-divider" /><div className="stat-item"><span>Session spend</span><strong>{formatAmount(totalLocalSpend)} <small>USDC</small></strong></div></div>
+      </section>
 
-        <div style={{ background: "#0a0a0a", padding: "1.2rem", borderRadius: "16px", border: "1px solid #222", display: "flex", gap: "1rem", alignItems: "center" }}>
-          <button onClick={() => { setShowSendBox(!showSendBox); setShowReceiveBox(false); }} style={{ flex: 1, background: showSendBox ? "#fbbf24" : "#38bdf8", color: "#000", border: "none", padding: "0.9rem", borderRadius: "12px", fontWeight: "bold", fontSize: "0.95rem", cursor: "pointer" }}>
-            🚀 {showSendBox ? "Close Send" : "Send USDC"}
-          </button>
-          <button onClick={() => { setShowReceiveBox(!showReceiveBox); setShowSendBox(false); }} style={{ flex: 1, background: "transparent", color: "#38bdf8", border: "2px solid #38bdf8", padding: "0.85rem", borderRadius: "12px", fontWeight: "bold", fontSize: "0.95rem", cursor: "pointer" }}>
-            📥 {showReceiveBox ? "Close QR" : "Receive QR"}
-          </button>
-        </div>
-      </div>
+      {!isConnected && <section className="connect-banner"><div><strong>Connect your wallet to start.</strong><span>BillFlow never asks for your seed phrase or private key.</span></div><ConnectButton label="Connect wallet" /></section>}
+      {isConnected && !onArc && <section className="warning-banner"><div><strong>Arc Testnet required</strong><span>Your wallet is connected to another network.</span></div><button className="secondary-button" onClick={() => switchChainAsync({ chainId: arcTestnet.id })}>Switch to Arc</button></section>}
 
-      {/* SEND TERMINAL */}
-      {showSendBox && (
-        <div style={{ background: "#0c0a09", padding: "1.5rem", borderRadius: "16px", border: "2px dashed #38bdf8", marginBottom: "1.5rem" }}>
-          <h3 style={{ color: "#38bdf8", fontSize: "1.1rem", fontWeight: "bold", marginBottom: "1rem" }}>📤 Instant Web3 Fund Transfer</h3>
-          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-            <div>
-              <label style={{ fontSize: "0.8rem", color: "#a8a29e", display: "block", marginBottom: "0.3rem" }}>Recipient Wallet Address</label>
-              <input type="text" value={sendAddress} onChange={(e) => setSendAddress(e.target.value)} placeholder="Enter target 0x address..." style={{ width: "100%", background: "#000", border: "1px solid #444", padding: "0.7rem", borderRadius: "8px", color: "#fff" }} />
-            </div>
-            <div>
-              <label style={{ fontSize: "0.8rem", color: "#a8a29e", display: "block", marginBottom: "0.3rem" }}>Amount (USDC)</label>
-              <input type="number" value={sendAmount} onChange={(e) => setSendAmount(e.target.value)} placeholder="0.00" style={{ width: "100%", background: "#000", border: "1px solid #444", padding: "0.7rem", borderRadius: "8px", color: "#fff" }} />
-            </div>
-            <button onClick={() => executeBlockchainTransfer("Direct Fund Transfer", sendAddress, sendAmount)} disabled={loading} style={{ background: "#4ade80", color: "#000", border: "none", padding: "0.8rem", borderRadius: "8px", fontWeight: "bold", marginTop: "0.5rem", cursor: "pointer" }}>
-              {loading ? "Confirming..." : "Broadcast Transfer"}
-            </button>
-          </div>
-        </div>
-      )}
+      <section className="section-head"><div><div className="eyebrow">QUICK PAYMENTS</div><h2>What are you paying?</h2></div><span className="muted">Choose a category, then confirm the recipient and amount.</span></section>
+      <section className="category-grid">{categories.map((category) => <button key={category.key} className="category-card" onClick={() => chooseCategory(category)}><span className="category-icon">{category.icon}</span><span>{category.label}</span></button>)}</section>
 
-      {/* RECEIVE GATEWAY */}
-      {showReceiveBox && (
-        <div style={{ background: "#0c0a09", padding: "1.5rem", borderRadius: "16px", border: "2px dashed #4ade80", marginBottom: "1.5rem", display: "flex", flexDirection: "column", alignItems: "center", gap: "1rem" }}>
-          <h3 style={{ color: "#4ade80", fontSize: "1.1rem", fontWeight: "bold" }}>📥 Deposit Gateway (Arc Testnet)</h3>
-          <div style={{ background: "#fff", padding: "0.8rem", borderRadius: "12px", width: "140px", height: "140px", display: "flex", justifyContent: "center", alignItems: "center" }}>
-            <div style={{ width: "120px", height: "120px", background: "repeating-linear-gradient(45deg, #000, #000 10px, #fff 10px, #fff 20px)" }}></div>
-          </div>
-          <div style={{ width: "100%", textAlign: "center" }}>
-            <p style={{ fontSize: "0.8rem", color: "#94a3b8", wordBreak: "break-all", background: "#000", padding: "0.6rem", borderRadius: "8px", border: "1px solid #222" }}>{address || "Wallet Disconnected!"}</p>
-            <button onClick={() => { navigator.clipboard.writeText(address || ""); alert("Copied!"); }} style={{ background: "#222", color: "#4ade80", border: "1px solid #4ade80", padding: "0.5rem 1rem", borderRadius: "6px", fontSize: "0.85rem", fontWeight: "bold" }}>Copy Address</button>
-          </div>
-        </div>
-      )}
+      <section id="payment-form" className="panel payment-panel">
+        <div className="panel-heading"><div><div className="eyebrow">PAYMENT</div><h2>Send USDC</h2></div><span className="network-pill">Arc Testnet</span></div>
+        <form onSubmit={handlePayment} className="payment-form">
+          <label>Bill or payment name<input value={billName} onChange={(event) => setBillName(event.target.value)} placeholder="e.g. electricity bill" maxLength={80} /></label>
+          <label>Recipient wallet address<input value={recipient} onChange={(event) => setRecipient(event.target.value.trim())} placeholder="0x…" inputMode="text" autoComplete="off" /></label>
+          <label>Amount<div className="amount-input"><input value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="0.00" inputMode="decimal" min="0" step="0.000001" /><span>USDC</span></div></label>
+          {error && <div className="message error">{error}</div>}
+          {notice && <div className="message success">{notice}</div>}
+          <button className="primary-button" disabled={busy || !isConnected}>{isWalletPending ? "Confirm in wallet…" : receiptLoading ? "Confirming on Arc…" : "Review & pay"}</button>
+        </form>
+        <p className="security-note">You approve every transaction in your wallet. BillFlow cannot move funds without your wallet signature.</p>
+      </section>
 
-      {/* AI & TRADING */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "1rem", marginBottom: "1.5rem" }}>
-        <div style={{ background: "#0f172a", padding: "1.2rem", borderRadius: "16px", border: "1px solid #1e293b" }}>
-          <h3 style={{ color: "#fbbf24", fontSize: "0.95rem", fontWeight: "bold", marginBottom: "0.5rem" }}>🤖 AI Neuro-Copilot</h3>
-          <p style={{ fontSize: "0.85rem", color: "#94a3b8", minHeight: "45px", backgroundColor: "#020617", padding: "0.6rem", borderRadius: "8px", border: "1px solid #1e293b", marginBottom: "0.6rem" }}>{aiResponse}</p>
-          <div style={{ display: "flex", gap: "0.5rem" }}>
-            <input type="text" value={aiCommand} onChange={(e) => setAiCommand(e.target.value)} placeholder="Type command here..." style={{ flex: 1, background: "#000", border: "1px solid #334155", padding: "0.7rem", borderRadius: "8px", color: "#fff" }} />
-            <button onClick={handleAiChat} style={{ background: "#fbbf24", color: "#000", border: "none", padding: "0.7rem 1.2rem", borderRadius: "8px", fontWeight: "bold" }}>Ask</button>
-          </div>
-        </div>
+      <section className="receive-row"><div><div className="eyebrow">RECEIVE</div><h2>Get paid to your wallet</h2><p className="muted">Share your Arc wallet address when someone needs to send you USDC.</p></div><button className="secondary-button" onClick={() => setShowReceive((value) => !value)} disabled={!isConnected}>{showReceive ? "Hide address" : "Show address"}</button></section>
+      {showReceive && isConnected && <section className="panel receive-panel"><div className="address-box">{address}</div><div className="receive-actions"><button className="secondary-button" onClick={copyAddress}>Copy address</button><a className="text-link" href={`https://testnet.arcscan.app/address/${address}`} target="_blank" rel="noreferrer">View on explorer ↗</a></div></section>}
 
-        <div style={{ background: "#052e16", padding: "1.2rem", borderRadius: "16px", border: "1px solid #064e3b" }}>
-          <h3 style={{ color: "#4ade80", fontSize: "0.95rem", fontWeight: "bold", marginBottom: "0.5rem" }}>🔄 StableFX Micro-Trading</h3>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#000", padding: "0.7rem", borderRadius: "8px", marginBottom: "0.6rem" }}>
-            <select value={swapFrom} onChange={(e) => setSwapFrom(e.target.value)} style={{ background: "transparent", color: "#fff", border: "none", fontWeight: "bold", fontSize: "0.9rem", width: "100%" }}>
-              <option value="EURC" style={{background:"#000"}}>EURC (Euro Coin)</option>
-              <option value="USYC" style={{background:"#000"}}>USYC (Treasury)</option>
-            </select>
-          </div>
-          <button onClick={() => alert("Simulation Trade")} disabled={!isConnected} style={{ width: "100%", background: "#4ade80", color: "#000", border: "none", padding: "0.75rem", borderRadius: "8px", fontWeight: "bold" }}>Execute Stable-Trade</button>
-        </div>
-      </div>
+      <section className="section-head history-head"><div><div className="eyebrow">ACTIVITY</div><h2>Recent payments</h2></div><span className="muted">Saved locally after confirmed transactions.</span></section>
+      <section className="panel activity-panel">{activity.length === 0 ? <div className="empty-state"><div className="empty-icon">↗</div><strong>No payments yet</strong><span>Your confirmed BillFlow payments will appear here.</span></div> : activity.map((item) => <div className="activity-item" key={item.hash}><div className="activity-icon">✓</div><div className="activity-main"><strong>{item.title}</strong><span>{new Date(item.timestamp).toLocaleString()} · {shortAddress(item.hash)}</span></div><div className="activity-amount">-{formatAmount(item.amount)} USDC</div></div>)}</section>
 
-      {/* HISTORY */}
-      <div style={{ background: "#0a0a0a", padding: "1.2rem", borderRadius: "16px", border: "1px solid #222", marginBottom: "1.5rem" }}>
-        <h3 style={{ fontSize: "1.1rem", fontWeight: "bold", color: "#f43f5e", marginBottom: "1rem" }}>📋 Live Expense Tracker & History</h3>
-        <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-          {history.map((item, idx) => (
-            <div key={idx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#020617", padding: "0.8rem 1rem", borderRadius: "10px", border: "1px solid #111" }}>
-              <div>
-                <h4 style={{ fontSize: "0.95rem", fontWeight: "bold", color: "#fff" }}>{item.title}</h4>
-                <p style={{ fontSize: "0.75rem", color: "#64748b", marginTop: "0.2rem" }}>{item.date} • <span style={{ color: "#f43f5e" }}>Expense</span></p>
-              </div>
-              <div style={{ textAlign: "right", paddingRight: "0.4rem" }}>
-                <span style={{ fontSize: "1rem", fontWeight: "bold", color: "#fff" }}>-{item.amount} USDC</span>
-                <p style={{ fontSize: "0.75rem", marginTop: "0.2rem" }}>
-                  <a href={`https://testnet.arcscan.app/tx/${item.hash}`} target="_blank" rel="noreferrer" style={{ color: "#38bdf8", textDecoration: "none", fontWeight: "bold" }}>Verify ↗</a>
-                </p>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* UTILITIES */}
-      <div style={{ marginBottom: "1.5rem" }}>
-        <h3 style={{ fontSize: "1.1rem", fontWeight: "bold", color: "#38bdf8", marginBottom: "0.8rem" }}>⚡ High-Frequency Utilities</h3>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "1rem" }}>
-          <div style={{ background: "#080808", padding: "1.2rem", borderRadius: "14px", border: "1px solid #1c1c1c", display: "flex", flexDirection: "column", gap: "0.6rem" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}><span>🛒</span><h4 style={{ fontSize: "1rem", fontWeight: "bold" }}>Grocery Bill</h4></div>
-            <input type="number" value={billAmounts.grocery} onChange={(e) => handleInputChange("grocery", e.target.value)} placeholder="0.00" style={{ background: "#000", border: "1px solid #222", padding: "0.5rem", borderRadius: "6px", color: "#fff" }} />
-            <button onClick={() => executeBlockchainTransfer("Grocery Bill", "0xbcf83d3b112cbf43b19904e376dd8dee01fe2758", billAmounts.grocery, "grocery")} disabled={!isConnected} style={{ width: "100%", background: "#111", color: "#38bdf8", border: "1px solid #38bdf8", padding: "0.6rem", borderRadius: "8px", fontWeight: "bold" }}>Pay Now</button>
-          </div>
-          <div style={{ background: "#080808", padding: "1.2rem", borderRadius: "14px", border: "1px solid #1c1c1c", display: "flex", flexDirection: "column", gap: "0.6rem" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}><span>⛽</span><h4 style={{ fontSize: "1rem", fontWeight: "bold" }}>Petrol/Gas</h4></div>
-            <input type="number" value={billAmounts.petrol} onChange={(e) => handleInputChange("petrol", e.target.value)} placeholder="0.00" style={{ background: "#000", border: "1px solid #222", padding: "0.5rem", borderRadius: "6px", color: "#fff" }} />
-            <button onClick={() => executeBlockchainTransfer("Petrol/Gas", "0xbcf83d3b112cbf43b19904e376dd8dee01fe2758", billAmounts.petrol, "petrol")} disabled={!isConnected} style={{ width: "100%", background: "#111", color: "#38bdf8", border: "1px solid #38bdf8", padding: "0.6rem", borderRadius: "8px", fontWeight: "bold" }}>Pay Now</button>
-          </div>
-          <div style={{ background: "#080808", padding: "1.2rem", borderRadius: "14px", border: "1px solid #1c1c1c", display: "flex", flexDirection: "column", gap: "0.6rem" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}><span>📱</span><h4 style={{ fontSize: "1rem", fontWeight: "bold" }}>Mobile/Internet</h4></div>
-            <input type="number" value={billAmounts.internet} onChange={(e) => handleInputChange("internet", e.target.value)} placeholder="0.00" style={{ background: "#000", border: "1px solid #222", padding: "0.5rem", borderRadius: "6px", color: "#fff" }} />
-            <button onClick={() => executeBlockchainTransfer("Mobile/Internet", "0xbcf83d3b112cbf43b19904e376dd8dee01fe2758", billAmounts.internet, "internet")} disabled={!isConnected} style={{ width: "100%", background: "#111", color: "#38bdf8", border: "1px solid #38bdf8", padding: "0.6rem", borderRadius: "8px", fontWeight: "bold" }}>Pay Now</button>
-          </div>
-        </div>
-      </div>
-
-      {/* OPERATIONAL COSTS */}
-      <div style={{ paddingBottom: "1rem" }}>
-        <h3 style={{ fontSize: "1.1rem", fontWeight: "bold", color: "#94a3b8", marginBottom: "0.8rem" }}>📅 Operational Costs (All Live)</h3>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "1rem" }}>
-          <div style={{ background: "#050505", padding: "1.2rem", borderRadius: "14px", border: "1px solid #222", display: "flex", flexDirection: "column", gap: "0.6rem" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}><span>💡</span><h4 style={{ fontSize: "0.95rem", fontWeight: "bold" }}>Electricity Bill</h4></div>
-            <input type="number" value={billAmounts.electricity} onChange={(e) => handleInputChange("electricity", e.target.value)} placeholder="0.00" style={{ background: "#000", border: "1px solid #334155", padding: "0.5rem", borderRadius: "6px", color: "#fff" }} />
-            <button onClick={() => executeBlockchainTransfer("Electricity Bill", "0xbcf83d3b112cbf43b19904e376dd8dee01fe2758", billAmounts.electricity, "electricity")} disabled={!isConnected || loading} style={{ width: "100%", background: "#38bdf8", color: "#000", border: "none", padding: "0.6rem", borderRadius: "8px", fontWeight: "bold" }}>Pay Bill</button>
-          </div>
-          <div style={{ background: "#050505", padding: "1.2rem", borderRadius: "14px", border: "1px solid #222", display: "flex", flexDirection: "column", gap: "0.6rem" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}><span>💧</span><h4 style={{ fontSize: "0.95rem", fontWeight: "bold" }}>Water Bill</h4></div>
-            <input type="number" value={billAmounts.water} onChange={(e) => handleInputChange("water", e.target.value)} placeholder="0.00" style={{ background: "#000", border: "1px solid #334155", padding: "0.5rem", borderRadius: "6px", color: "#fff" }} />
-            <button onClick={() => executeBlockchainTransfer("Water Bill", "0xbcf83d3b112cbf43b19904e376dd8dee01fe2758", billAmounts.water, "water")} disabled={!isConnected || loading} style={{ width: "100%", background: "#38bdf8", color: "#000", border: "none", padding: "0.6rem", borderRadius: "8px", fontWeight: "bold" }}>Pay Bill</button>
-          </div>
-          <div style={{ background: "#050505", padding: "1.2rem", borderRadius: "14px", border: "1px solid #222", display: "flex", flexDirection: "column", gap: "0.6rem" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}><span>🏠</span><h4 style={{ fontSize: "0.95rem", fontWeight: "bold" }}>Rent Payment</h4></div>
-            <input type="number" value={billAmounts.rent} onChange={(e) => handleInputChange("rent", e.target.value)} placeholder="0.00" style={{ background: "#000", border: "1px solid #334155", padding: "0.5rem", borderRadius: "6px", color: "#fff" }} />
-            <button onClick={() => executeBlockchainTransfer("Rent Payment", "0xbcf83d3b112cbf43b19904e376dd8dee01fe2758", billAmounts.rent, "rent")} disabled={!isConnected || loading} style={{ width: "100%", background: "#38bdf8", color: "#000", border: "none", padding: "0.6rem", borderRadius: "8px", fontWeight: "bold" }}>Pay Bill</button>
-          </div>
-        </div>
-      </div>
+      <footer className="footer"><span>BillFlow</span><span>Built on Arc · Testnet</span><a href="https://docs.arc.io/" target="_blank" rel="noreferrer">Arc docs ↗</a></footer>
     </main>
   );
 }
