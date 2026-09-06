@@ -1,15 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
-import {
-  useAccount,
-  useBalance,
-  useChainId,
-  useSwitchChain,
-  useWaitForTransactionReceipt,
-  useWriteContract,
-} from "wagmi";
+import { useAccount, useBalance, useChainId, useSwitchChain, useWaitForTransactionReceipt, useWriteContract } from "wagmi";
 import { isAddress, parseUnits } from "viem";
 import { arcTestnet } from "@/lib/wagmi-config";
 
@@ -48,6 +41,7 @@ export default function Home() {
   const [txHash, setTxHash] = useState();
   const [activity, setActivity] = useState([]);
   const [showReceive, setShowReceive] = useState(false);
+  const processedTxRef = useRef("");
 
   const { data: balanceData, isLoading: balanceLoading, refetch: refetchBalance } = useBalance({ address, token: USDC_ADDRESS, chainId: arcTestnet.id, query: { enabled: Boolean(address) } });
   const { isLoading: receiptLoading, isSuccess: receiptSuccess } = useWaitForTransactionReceipt({ hash: txHash });
@@ -68,7 +62,8 @@ export default function Home() {
   }, [activity]);
 
   useEffect(() => {
-    if (!receiptSuccess || !txHash) return;
+    if (!receiptSuccess || !txHash || processedTxRef.current === txHash) return;
+    processedTxRef.current = txHash;
     const entry = { id: txHash, title: billName.trim() || "USDC payment", category: selectedCategory, amount, hash: txHash, timestamp: new Date().toISOString() };
     setActivity((current) => [entry, ...current.filter((item) => item.hash !== txHash)].slice(0, 20));
     setRecipient("");
@@ -127,11 +122,7 @@ export default function Home() {
       </header>
 
       <section className="hero-grid">
-        <div className="hero-card">
-          <div className="eyebrow">YOUR BALANCE</div>
-          <div className="balance-row"><span className="balance-value">{isConnected ? (balanceLoading ? "…" : formatAmount(balance)) : "0.00"}</span><span className="currency">USDC</span></div>
-          <div className="wallet-line">{isConnected ? shortAddress(address) : "Wallet not connected"}{isConnected && <span className={onArc ? "status-dot online" : "status-dot"}>{onArc ? "Arc Testnet" : "Wrong network"}</span>}</div>
-        </div>
+        <div className="hero-card"><div className="eyebrow">YOUR BALANCE</div><div className="balance-row"><span className="balance-value">{isConnected ? (balanceLoading ? "…" : formatAmount(balance)) : "0.00"}</span><span className="currency">USDC</span></div><div className="wallet-line">{isConnected ? shortAddress(address) : "Wallet not connected"}{isConnected && <span className={onArc ? "status-dot online" : "status-dot"}>{onArc ? "Arc Testnet" : "Wrong network"}</span>}</div></div>
         <div className="stats-card"><div className="stat-item"><span>Payments recorded</span><strong>{activity.length}</strong></div><div className="stat-divider" /><div className="stat-item"><span>Session spend</span><strong>{formatAmount(totalLocalSpend)} <small>USDC</small></strong></div></div>
       </section>
 
@@ -149,7 +140,7 @@ export default function Home() {
           <label>Amount<div className="amount-input"><input value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="0.00" inputMode="decimal" min="0" step="0.000001" /><span>USDC</span></div></label>
           {error && <div className="message error">{error}</div>}
           {notice && <div className="message success">{notice}</div>}
-          <button className="primary-button" disabled={busy || !isConnected}>{isWalletPending ? "Confirm in wallet…" : receiptLoading ? "Confirming on Arc…" : "Review & pay"}</button>
+          <button className="primary-button" disabled={busy || !isConnected}>{isWalletPending ? "Confirm in wallet…" : receiptLoading ? "Confirming on Arc…" : "Pay with wallet"}</button>
         </form>
         <p className="security-note">You approve every transaction in your wallet. BillFlow cannot move funds without your wallet signature.</p>
       </section>
