@@ -1,58 +1,62 @@
-# BillFlow
+# FlowProof
 
-BillFlow is a wallet-first USDC payment experience built on **Arc Testnet**.
+**payments you can prove.**
 
-## Product goal
+FlowProof is a non-custodial payment verification workspace for real USDC transfers on Arc Testnet.
 
-Make a small, understandable payment surface for sending and receiving USDC without pretending that simulated actions are real payments.
-
-## Current product flow
+## What it does
 
 1. Connect an EVM wallet.
-2. Detect whether the wallet is on Arc Testnet.
-3. Read the connected wallet's USDC balance.
-4. Choose a common payment category.
-5. Enter a recipient and amount.
-6. Validate the address and balance before asking the wallet to sign.
-7. Submit a real ERC-20 USDC transfer on Arc.
-8. Wait for transaction confirmation before recording the payment locally.
-9. Share/copy the wallet address for receiving USDC.
-10. Open confirmed transactions in the Arc Testnet explorer.
+2. Create a payment request with an amount, recipient and reference.
+3. Share the generated request URL.
+4. Pay the request with real Arc Testnet USDC.
+5. Verify a transaction directly against Arc RPC.
+6. Mark a payment verified only when the transaction, network, token, amount and recipient all match.
 
-## Arc-specific implementation
+## Verification model
 
-- Arc Testnet chain ID: `5042002`
-- Arc Testnet RPC: `https://rpc.testnet.arc.network`
-- USDC ERC-20 interface: `0x3600000000000000000000000000000000000000`
-- USDC ERC-20 amount precision: 6 decimals
-- Arc native USDC gas uses a different 18-decimal native representation; BillFlow uses the ERC-20 interface for application payments.
+FlowProof does not ship with fake transaction history or simulated settlement. Verification reads the transaction receipt and the USDC `Transfer` event from Arc Testnet.
+
+A payment is considered verified only when:
+
+- the transaction receipt succeeds;
+- the transaction is on Arc Testnet;
+- the Arc USDC contract matches;
+- the transferred amount matches the request;
+- the on-chain recipient matches the request.
+
+## Arc Testnet
+
+- Chain ID: `5042002`
+- RPC: `https://rpc.testnet.arc.network`
+- Explorer: `https://testnet.arcscan.app`
+- USDC: `0x3600000000000000000000000000000000000000`
+
+Use test USDC only. Never enter a private key or seed phrase into the application.
 
 ## Stack
 
 - Next.js 16
 - React 19
-- TypeScript/JavaScript
+- TypeScript / JavaScript
 - Tailwind CSS 4
 - Wagmi
 - Viem
 - RainbowKit
-- TanStack Query
-
-## Important product rule
-
-BillFlow must never display fake successful transactions, fake balances, or simulated transfers as if they were real. On-chain state is the source of truth for payments; the local activity list is only a convenience record of confirmed payments made through this interface.
 
 ## Development
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 
-Open `http://localhost:3000`.
+Then open `http://localhost:3000`.
+
+## Project status
+
+The current MVP is built in the `flowproof-mvp` branch. Production deployment remains separate until the real Arc Testnet payment path has been manually exercised with a funded test wallet.
 
 ## Builder
 
 **AMRISH KUMAR DWIVEDI**
-
-[GitHub](https://github.com/AMRISHKUMARDWIVEDI08) · [BillFlow repository](https://github.com/AMRISHKUMARDWIVEDI08/billflow)
